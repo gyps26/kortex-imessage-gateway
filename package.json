@@ -5,10 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
+    "dev:all": "concurrently -n web,wa -c blue,green \"npm run dev\" \"npm run worker:whatsapp\"",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "worker:whatsapp": "tsx workers/whatsapp-worker.ts"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "worker:whatsapp": "tsx --env-file=.env.local --env-file=.env workers/whatsapp-worker.ts"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
@@ -29,15 +33,21 @@
     "wasp-protocol": "^0.5.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^10.0.3",
     "eslint": "^8",
     "eslint-config-next": "15.0.0-rc.0",
+    "mongodb-memory-server": "^11.2.0",
     "postcss": "^8",
     "tailwindcss": "^4.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.8",
+    "wait-on": "^9.0.10"
   }
 }

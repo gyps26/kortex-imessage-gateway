@@ -14,8 +14,8 @@ export interface IProfile extends mongoose.Document {
   whatsappPhone?: string;
   deviceBrand?: string;
   deviceModel?: string;
-  status: 'active' | 'inactive';
-  lastPing: Date;
+  status: 'active' | 'inactive' | 'pending';
+  lastPing?: Date;
   dailyCount: number;
   dailyLimit: number;
   lastReset: Date;
@@ -35,8 +35,8 @@ const profileSchema = new mongoose.Schema<IProfile>({
   whatsappPhone: { type: String },
   deviceBrand: { type: String },
   deviceModel: { type: String },
-  status: { type: String, enum: ['active', 'inactive'], default: 'active' },
-  lastPing: { type: Date, default: Date.now },
+  status: { type: String, enum: ['active', 'inactive', 'pending'], default: 'active' },
+  lastPing: { type: Date },
   dailyCount: { type: Number, default: 0 },
   dailyLimit: { type: Number, default: 50 },
   lastReset: { type: Date, default: Date.now },

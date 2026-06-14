@@ -8,7 +8,37 @@ export async function POST(req: NextRequest) {
   try {
     await connectToDatabase();
     const body = await req.json();
+    const providedApiKey = req.headers.get('x-api-key');
 
+    // If an API key is provided, the Android app is trying to register/link
+    if (providedApiKey) {
+      const profile = await Profile.findOne({ apiKey: providedApiKey, channel: 'SMS' });
+      if (!profile) {
+        return NextResponse.json({ error: 'Invalid API Key' }, { status: 404 });
+      }
+
+      // Update the profile with Android device details
+      if (body.fcmToken) {
+        profile.fcmToken = body.fcmToken;
+        profile.status = 'active';
+      }
+      if (body.brand) profile.deviceBrand = body.brand;
+      if (body.model) profile.deviceModel = body.model;
+      if (body.enabled !== undefined) profile.status = body.enabled ? 'active' : 'inactive';
+      profile.lastPing = new Date();
+      await profile.save();
+
+      // Return selfhostsim compatible response
+      return NextResponse.json({
+        success: true,
+        data: {
+          _id: profile.workerId,
+          enabled: profile.status === 'active',
+        }
+      });
+    }
+
+    // Otherwise, Web Dashboard is generating a new device
     const deviceId = crypto.randomUUID();
     const apiKey = generateDeviceApiKey();
 
@@ -20,8 +50,7 @@ export async function POST(req: NextRequest) {
       fcmToken: body.fcmToken,
       deviceBrand: body.brand,
       deviceModel: body.model,
-      status: body.enabled === false ? 'inactive' : 'active',
-      lastPing: new Date(),
+      status: body.enabled === false ? 'inactive' : 'pending',
     });
 
     return NextResponse.json({

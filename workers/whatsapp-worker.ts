@@ -5,6 +5,13 @@ import { Message } from '../models/Message';
 import { Profile } from '../models/Profile';
 import { injectInbound, updateMessageStatus } from '../lib/ghl/messages';
 import { getRedisConnection } from '../lib/queue/redis';
+import {
+  WASP_SESSION_CREATE_CHANNEL,
+  WASP_SESSION_DESTROY_CHANNEL,
+  touchWorkerHeartbeat,
+  type SessionCreateEvent,
+  type SessionDestroyEvent,
+} from '../lib/whatsapp/session-events';
 
 const REDIS_URL = process.env.REDIS_URL;
 
@@ -17,6 +24,28 @@ function parseRedisConfig(urlStr: string) {
     db: parsed.pathname && parsed.pathname.length > 1 ? parseInt(parsed.pathname.slice(1), 10) : undefined,
     keyPrefix: 'wasp:',
   };
+}
+
+async function createWaspSession(wasp: WaSP, sessionId: string) {
+  const existing = await wasp.getSession(sessionId);
+  if (existing) return;
+  try {
+    await wasp.createSession(sessionId, 'BAILEYS' as Parameters<WaSP['createSession']>[1]);
+    console.log(`WhatsApp session created: ${sessionId}`);
+  } catch (err) {
+    console.error(`Failed to create session ${sessionId}:`, err);
+  }
+}
+
+async function destroyWaspSession(wasp: WaSP, sessionId: string) {
+  try {
+    if (typeof (wasp as { destroySession?: (id: string) => Promise<void> }).destroySession === 'function') {
+      await (wasp as { destroySession: (id: string) => Promise<void> }).destroySession(sessionId);
+    }
+    console.log(`WhatsApp session destroyed: ${sessionId}`);
+  } catch (err) {
+    console.error(`Failed to destroy session ${sessionId}:`, err);
+  }
 }
 
 async function main() {
@@ -34,10 +63,14 @@ async function main() {
     urlStr = urlStr.replace('redis://', 'rediss://');
   }
 
+  const { default: pino } = await import('pino');
+  const logger = pino({ level: process.env.WASP_DEBUG === 'true' ? 'debug' : 'warn' });
+
   const wasp = new WaSP({
     store: new RedisStore(parseRedisConfig(urlStr)),
     queue: { minDelay: 20000, maxDelay: 45000, maxConcurrent: 1 },
     debug: process.env.WASP_DEBUG === 'true',
+    logger,
   });
 
   wasp.on(EventType.SESSION_QR, async (event) => {
@@ -45,7 +78,7 @@ async function main() {
     const qr = (event.data as { qr?: string })?.qr;
     if (!sessionId || !qr) return;
 
-    await Profile.updateOne({ sessionId, channel: 'WHATSAPP' }, { qrCode: qr, lastPing: new Date() });
+    await Profile.updateOne({ sessionId, channel: 'WHATSAPP' }, { $set: { qrCode: qr, lastPing: new Date() } });
     console.log(`QR updated for session ${sessionId}`);
   });
 
@@ -55,7 +88,10 @@ async function main() {
 
     await Profile.updateOne(
       { sessionId, channel: 'WHATSAPP' },
-      { status: 'active', whatsappPhone: phone, qrCode: undefined, lastPing: new Date() }
+      {
+        $set: { status: 'active', whatsappPhone: phone, lastPing: new Date() },
+        $unset: { qrCode: 1 },
+      }
     );
     console.log(`WhatsApp connected: session ${sessionId} phone ${phone}`);
   });
@@ -63,7 +99,10 @@ async function main() {
   wasp.on(EventType.SESSION_DISCONNECTED, async (event) => {
     await Profile.updateOne(
       { sessionId: event.sessionId, channel: 'WHATSAPP' },
-      { status: 'inactive', lastPing: new Date() }
+      {
+        $set: { status: 'inactive', lastPing: new Date() },
+        $unset: { qrCode: 1 },
+      }
     );
     console.log(`WhatsApp disconnected: session ${event.sessionId}`);
   });
@@ -106,12 +145,7 @@ async function main() {
   const connectors = await Profile.find({ channel: 'WHATSAPP', sessionId: { $exists: true } });
   for (const connector of connectors) {
     if (connector.sessionId) {
-      try {
-        await wasp.createSession(connector.sessionId);
-        console.log(`Restored WhatsApp session ${connector.sessionId}`);
-      } catch (err) {
-        console.error(`Failed to restore session ${connector.sessionId}:`, err);
-      }
+      await createWaspSession(wasp, connector.sessionId);
     }
   }
 
@@ -120,14 +154,13 @@ async function main() {
       channel: 'WHATSAPP',
       status: 'inactive',
       sessionId: { $exists: true },
-      qrCode: { $exists: false },
+      $or: [{ qrCode: { $exists: false } }, { qrCode: null }],
     });
     for (const connector of pending) {
-      if (connector.sessionId && !wasp.getSession(connector.sessionId)) {
-        try {
-          await wasp.createSession(connector.sessionId);
-        } catch {
-          // session may already exist
+      if (connector.sessionId) {
+        const session = await wasp.getSession(connector.sessionId);
+        if (!session) {
+          await createWaspSession(wasp, connector.sessionId);
         }
       }
     }
@@ -138,6 +171,32 @@ async function main() {
     console.error('Redis connection unavailable');
     process.exit(1);
   }
+
+  const subscriber = connection.duplicate();
+  await subscriber.subscribe(WASP_SESSION_CREATE_CHANNEL, WASP_SESSION_DESTROY_CHANNEL);
+
+  subscriber.on('message', async (channel, message) => {
+    try {
+      if (channel === WASP_SESSION_CREATE_CHANNEL) {
+        const event = JSON.parse(message) as SessionCreateEvent;
+        if (event.sessionId) {
+          await createWaspSession(wasp, event.sessionId);
+        }
+      } else if (channel === WASP_SESSION_DESTROY_CHANNEL) {
+        const event = JSON.parse(message) as SessionDestroyEvent;
+        if (event.sessionId) {
+          await destroyWaspSession(wasp, event.sessionId);
+        }
+      }
+    } catch (err) {
+      console.error('Session event handler error:', err);
+    }
+  });
+
+  setInterval(() => {
+    touchWorkerHeartbeat().catch((err) => console.error('Heartbeat error:', err));
+  }, 30_000);
+  await touchWorkerHeartbeat();
 
   const worker = new Worker(
     'whatsappOutbound',
@@ -151,8 +210,9 @@ async function main() {
         throw new Error('WhatsApp connector not found');
       }
 
-      if (!wasp.getSession(profile.sessionId)) {
-        await wasp.createSession(profile.sessionId);
+      const session = await wasp.getSession(profile.sessionId);
+      if (!session) {
+        await createWaspSession(wasp, profile.sessionId);
       }
 
       await wasp.sendMessage(profile.sessionId, message.phone, message.body);
@@ -174,7 +234,7 @@ async function main() {
         }
       }
     },
-    { connection: connection as any, concurrency: 1 }
+    { connection: connection as object, concurrency: 1 }
   );
 
   worker.on('failed', (job, err) => {

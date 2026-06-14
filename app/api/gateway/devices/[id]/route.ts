@@ -9,9 +9,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!profile) return unauthorizedResponse();
 
     const { id } = await params;
-    if (profile.workerId !== id) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
 
     await connectToDatabase();
     const body = await req.json();
@@ -25,8 +22,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     await profile.save();
 
     return NextResponse.json({
-      id: profile.workerId,
-      enabled: profile.status === 'active',
+      success: true,
+      data: {
+        _id: profile.workerId,
+        enabled: profile.status === 'active',
+      }
     });
   } catch (error: unknown) {
     console.error('Device update error:', error);

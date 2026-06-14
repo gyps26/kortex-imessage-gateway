@@ -10,9 +10,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!profile) return unauthorizedResponse();
 
     const { id } = await params;
-    if (profile.workerId !== id) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
 
     if (!profile.assignedLocationId) {
       return NextResponse.json({ error: 'Device not assigned to a location' }, { status: 400 });

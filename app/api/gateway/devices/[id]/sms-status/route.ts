@@ -11,9 +11,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!profile) return unauthorizedResponse();
 
     const { id } = await params;
-    if (profile.workerId !== id) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
 
     const body = await req.json();
     const { smsId, status, errorMessage, errorCode } = body;

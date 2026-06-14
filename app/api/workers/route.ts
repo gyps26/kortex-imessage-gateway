@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase } from '../../../lib/db/mongoose';
 import { Profile } from '../../../models/Profile';
+import { publishSessionDestroy } from '../../../lib/whatsapp/session-events';
 
 export async function PUT(req: NextRequest) {
     try {
@@ -46,6 +47,10 @@ export async function DELETE(req: NextRequest) {
         const profile = await Profile.findOneAndDelete({ workerId });
         if (!profile) {
             return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+        }
+
+        if (profile.channel === 'WHATSAPP' && profile.sessionId) {
+            await publishSessionDestroy({ sessionId: profile.sessionId, workerId: profile.workerId });
         }
 
         return NextResponse.json({ success: true });
