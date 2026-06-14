@@ -10,7 +10,19 @@ services:
       - MONGODB_URI=mongodb://mongodb:27017/kortex-imessage-gateway
       - REDIS_URL=redis://redis:6379
       - API_SECRET=my_super_secret_for_mac_workers
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - APP_URL=http://localhost:3000
+    depends_on:
+      - mongodb
+      - redis
+
+  whatsapp-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npm run worker:whatsapp
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/kortex-imessage-gateway
+      - REDIS_URL=redis://redis:6379
     depends_on:
       - mongodb
       - redis

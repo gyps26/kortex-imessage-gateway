@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase } from '../../../../lib/db/mongoose';
 import { Message } from '../../../../models/Message';
-import { GhlLocation } from '../../../../models/GhlLocation';
-import { getValidAccessToken } from '../../../../lib/ghl';
-import axios from 'axios';
+import { updateMessageStatus } from '../../../../lib/ghl/messages';
 
 function checkAuth(req: NextRequest) {
     const bearer = req.headers.get('authorization');
@@ -33,6 +31,7 @@ export async function POST(req: NextRequest) {
         const msg = await Message.findOne({
             phone,
             body: smsText,
+            channel: 'IMESSAGE',
             direction: 'outbound',
             status: { $in: ['sent', 'delivered', 'pending', 'queued'] },
             createdAt: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }
@@ -48,23 +47,16 @@ export async function POST(req: NextRequest) {
 
         // Sync status back to GHL Custom Provider
         if (msg.ghlMessageId && msg.locationId) {
-            const ghlLocation = await GhlLocation.findOne({ locationId: msg.locationId });
-            const accessToken = ghlLocation ? await getValidAccessToken(ghlLocation) : null;
-            if (accessToken) {
-                try {
-                    await axios.put(`https://services.leadconnectorhq.com/conversations/messages/${msg.ghlMessageId}/status`, {
-                        status: 'undelivered',
-                        error: { code: 400, message: 'Message failed to deliver natively via Mac.' }
-                    }, {
-                        headers: {
-                            'Authorization': `Bearer ${accessToken}`,
-                            'Version': '2021-04-15',
-                            'Content-Type': 'application/json'
-                        }
-                    });
-                } catch (e: any) {
-                    console.error('Failed to sync delayed failure status to GHL:', e.response?.data || e.message);
-                }
+            try {
+                await updateMessageStatus({
+                    locationId: msg.locationId,
+                    ghlMessageId: msg.ghlMessageId,
+                    status: 'failed',
+                    errorDetails: 'Message failed to deliver natively via Mac.',
+                });
+            } catch (e: unknown) {
+                const err = e as { response?: { data?: unknown }; message?: string };
+                console.error('Failed to sync delayed failure status to GHL:', err.response?.data || err.message);
             }
         }
 

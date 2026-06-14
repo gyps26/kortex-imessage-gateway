@@ -21,6 +21,7 @@ export async function PUT(req: NextRequest) {
         if (dailyLimit !== undefined) profile.dailyLimit = dailyLimit;
         if (assignedLocationId !== undefined) profile.assignedLocationId = assignedLocationId;
         if (name !== undefined) profile.name = name;
+        if (body.channel !== undefined) profile.channel = body.channel;
 
         await profile.save();
 

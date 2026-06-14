@@ -1,27 +1,32 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { PageHeader } from '../../components/page-header';
 
+type Channel = 'IMESSAGE' | 'WHATSAPP' | 'SMS';
+
 export default function WorkersPage() {
+  const [activeTab, setActiveTab] = useState<Channel>('IMESSAGE');
   const [setupModalOpen, setSetupModalOpen] = useState(false);
-  const [workers, setWorkers] = useState<any[]>([]);
+  const [connectors, setConnectors] = useState<any[]>([]);
   const [workerToken, setWorkerToken] = useState('');
   const [installerUrl, setInstallerUrl] = useState('/api/installer');
   const [copied, setCopied] = useState(false);
+  const [qrData, setQrData] = useState<{ workerId: string; qr: string } | null>(null);
+  const [newDeviceApiKey, setNewDeviceApiKey] = useState<string | null>(null);
 
-  const loadWorkers = () => {
-    fetch('/api/workers/list')
+  const loadConnectors = useCallback(() => {
+    fetch(`/api/workers/list?channel=${activeTab}`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.profiles) setWorkers(data.profiles);
+        if (data.profiles) setConnectors(data.profiles);
       });
-  };
+  }, [activeTab]);
 
   useEffect(() => {
-    loadWorkers();
-    const interval = setInterval(loadWorkers, 10000);
+    loadConnectors();
+    const interval = setInterval(loadConnectors, 10000);
 
     fetch('/api/settings/token')
       .then((res) => res.json())
@@ -31,7 +36,25 @@ export default function WorkersPage() {
       });
 
     return () => clearInterval(interval);
-  }, []);
+  }, [loadConnectors]);
+
+  useEffect(() => {
+    if (activeTab !== 'WHATSAPP' || !qrData) return;
+    const interval = setInterval(() => {
+      fetch(`/api/connectors/${qrData.workerId}/qr`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.qrCode && data.qrCode !== qrData.qr) {
+            setQrData({ workerId: qrData.workerId, qr: data.qrCode });
+          }
+          if (data.status === 'active') {
+            setQrData(null);
+            loadConnectors();
+          }
+        });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [activeTab, qrData, loadConnectors]);
 
   const handleEditLimit = async (workerId: string, currentLimit: number) => {
     const newLimit = prompt('Enter new daily limit:', currentLimit.toString());
@@ -41,16 +64,41 @@ export default function WorkersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workerId, dailyLimit: Number(newLimit) }),
       });
-      loadWorkers();
+      loadConnectors();
     }
   };
 
-  const handleRemoveWorker = async (workerId: string) => {
-    if (confirm('Are you sure you want to remove this device?')) {
-      await fetch(`/api/workers?workerId=${encodeURIComponent(workerId)}`, {
-        method: 'DELETE',
-      });
-      loadWorkers();
+  const handleRemoveConnector = async (workerId: string) => {
+    if (confirm('Are you sure you want to remove this connector?')) {
+      await fetch(`/api/workers?workerId=${encodeURIComponent(workerId)}`, { method: 'DELETE' });
+      loadConnectors();
+    }
+  };
+
+  const handleCreateWhatsApp = async () => {
+    const name = prompt('Connector name (optional):', 'WhatsApp Line 1');
+    const res = await fetch('/api/connectors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name || undefined }),
+    });
+    const data = await res.json();
+    if (data.profile) {
+      loadConnectors();
+      setQrData({ workerId: data.profile.workerId, qr: data.profile.qrCode || 'Waiting for QR...' });
+    }
+  };
+
+  const handleRegisterAndroid = async () => {
+    const res = await fetch('/api/gateway/devices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const data = await res.json();
+    if (data.apiKey) {
+      setNewDeviceApiKey(data.apiKey);
+      loadConnectors();
     }
   };
 
@@ -62,34 +110,92 @@ export default function WorkersPage() {
 
   const isOnline = (lastPing: string) => Date.now() - new Date(lastPing).getTime() < 30_000;
 
+  const tabClass = (tab: Channel) =>
+    `px-6 py-2 rounded-t-xl font-medium text-sm ${
+      activeTab === tab
+        ? 'bg-indigo-600 text-white shadow'
+        : 'bg-slate-100 dark:bg-slate-800 text-slate-400'
+    }`;
+
+  const titles: Record<Channel, string> = {
+    IMESSAGE: 'iMessage Connectors',
+    WHATSAPP: 'WhatsApp Connectors',
+    SMS: 'Android SMS Devices',
+  };
+
   return (
     <div className="flex-1 bg-[#F5F6FA] dark:bg-slate-950 overflow-y-auto">
       <PageHeader />
 
       <div className="p-8 max-w-7xl mx-auto space-y-6">
         <div className="flex mb-4 gap-2">
-          <span className="px-6 py-2 rounded-t-xl bg-indigo-600 text-white font-medium text-sm shadow">iMessage Devices</span>
-          <span className="px-6 py-2 rounded-t-xl bg-slate-100 dark:bg-slate-800 text-slate-400 font-medium text-sm">Android (coming soon)</span>
-          <span className="px-6 py-2 rounded-t-xl bg-slate-100 dark:bg-slate-800 text-slate-400 font-medium text-sm">WhatsApp (coming soon)</span>
+          <button type="button" onClick={() => setActiveTab('IMESSAGE')} className={tabClass('IMESSAGE')}>
+            iMessage
+          </button>
+          <button type="button" onClick={() => setActiveTab('SMS')} className={tabClass('SMS')}>
+            Android SMS
+          </button>
+          <button type="button" onClick={() => setActiveTab('WHATSAPP')} className={tabClass('WHATSAPP')}>
+            WhatsApp
+          </button>
         </div>
 
         <div className="bg-white dark:bg-slate-900 rounded-b-xl rounded-tr-xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm min-h-[500px]">
           <div className="flex justify-between items-center mb-6">
-            <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100 tracking-tight">Mac Workers</h2>
+            <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100 tracking-tight">{titles[activeTab]}</h2>
             <div className="flex gap-4">
-              <button
-                onClick={() => setSetupModalOpen(true)}
-                className="bg-indigo-500 hover:bg-indigo-600 text-white font-bold px-6 py-2 rounded-lg text-sm shadow-sm transition-colors"
-              >
-                Add Device
-              </button>
+              {activeTab === 'IMESSAGE' && (
+                <button
+                  onClick={() => setSetupModalOpen(true)}
+                  className="bg-indigo-500 hover:bg-indigo-600 text-white font-bold px-6 py-2 rounded-lg text-sm shadow-sm transition-colors"
+                >
+                  Add Device
+                </button>
+              )}
+              {activeTab === 'WHATSAPP' && (
+                <button
+                  onClick={handleCreateWhatsApp}
+                  className="bg-green-600 hover:bg-green-700 text-white font-bold px-6 py-2 rounded-lg text-sm shadow-sm transition-colors"
+                >
+                  Add WhatsApp Line
+                </button>
+              )}
+              {activeTab === 'SMS' && (
+                <button
+                  onClick={handleRegisterAndroid}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-6 py-2 rounded-lg text-sm shadow-sm transition-colors"
+                >
+                  Register Device
+                </button>
+              )}
             </div>
           </div>
+
+          {qrData && activeTab === 'WHATSAPP' && (
+            <div className="mb-6 p-4 border border-green-200 rounded-xl bg-green-50 dark:bg-green-950/30">
+              <p className="text-sm font-semibold text-green-800 dark:text-green-300 mb-2">Scan QR with WhatsApp</p>
+              <p className="font-mono text-xs break-all text-slate-600 dark:text-slate-400">{qrData.qr}</p>
+            </div>
+          )}
+
+          {newDeviceApiKey && activeTab === 'SMS' && (
+            <div className="mb-6 p-4 border border-emerald-200 rounded-xl bg-emerald-50 dark:bg-emerald-950/30">
+              <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300 mb-2">Device API Key (save now — shown once)</p>
+              <code className="text-xs break-all">{newDeviceApiKey}</code>
+              <button
+                type="button"
+                onClick={() => setNewDeviceApiKey(null)}
+                className="block mt-2 text-xs text-emerald-600 underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
 
           <table className="w-full text-left text-sm text-slate-600 dark:text-slate-400">
             <thead>
               <tr className="text-[10px] font-bold text-slate-500 uppercase border-b border-slate-100 dark:border-slate-800 tracking-wider">
-                <th className="pb-4">Device Name</th>
+                <th className="pb-4">Name</th>
                 <th className="pb-4">Assigned Location</th>
                 <th className="pb-4 text-center">Daily Limit</th>
                 <th className="pb-4 text-center">Daily Sent</th>
@@ -99,21 +205,26 @@ export default function WorkersPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50 dark:divide-slate-800/50">
-              {workers.length === 0 ? (
+              {connectors.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-8 text-center">
-                    No workers found.{' '}
-                    <button onClick={() => setSetupModalOpen(true)} className="text-indigo-500 underline">
-                      Set up your first Mac worker
-                    </button>
+                    No connectors found for {activeTab}.
                   </td>
                 </tr>
               ) : (
-                workers.map((worker) => {
+                connectors.map((worker) => {
                   const online = isOnline(worker.lastPing);
                   return (
                     <tr key={worker.workerId}>
-                      <td className="py-4 text-indigo-500 font-medium">{worker.name || worker.workerId}</td>
+                      <td className="py-4 text-indigo-500 font-medium">
+                        {worker.name || worker.workerId}
+                        {worker.whatsappPhone && (
+                          <span className="block text-xs text-slate-400 font-mono">{worker.whatsappPhone}</span>
+                        )}
+                        {worker.deviceModel && (
+                          <span className="block text-xs text-slate-400">{worker.deviceBrand} {worker.deviceModel}</span>
+                        )}
+                      </td>
                       <td className="py-4 font-mono text-xs">{worker.assignedLocationId || 'Unassigned'}</td>
                       <td className="py-4 text-center">
                         <span className="bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-xs font-mono">{worker.dailyLimit || 50}</span>
@@ -134,6 +245,14 @@ export default function WorkersPage() {
                       </td>
                       <td className="py-4 text-center text-xs font-mono">{new Date(worker.lastPing).toLocaleString()}</td>
                       <td className="py-4 flex gap-2 justify-end">
+                        {activeTab === 'WHATSAPP' && worker.status !== 'active' && (
+                          <button
+                            onClick={() => setQrData({ workerId: worker.workerId, qr: worker.qrCode || 'Waiting for QR...' })}
+                            className="border border-green-200 text-green-600 hover:bg-green-50 px-3 py-1 rounded text-xs font-semibold"
+                          >
+                            Show QR
+                          </button>
+                        )}
                         <button
                           onClick={() => handleEditLimit(worker.workerId, worker.dailyLimit || 50)}
                           className="border border-indigo-200 text-indigo-500 hover:bg-indigo-50 px-3 py-1 rounded text-xs font-semibold transition-colors"
@@ -141,7 +260,7 @@ export default function WorkersPage() {
                           Edit Limit
                         </button>
                         <button
-                          onClick={() => handleRemoveWorker(worker.workerId)}
+                          onClick={() => handleRemoveConnector(worker.workerId)}
                           className="border border-red-200 text-red-500 hover:bg-red-50 px-3 py-1 rounded text-xs font-semibold transition-colors"
                         >
                           Remove
@@ -156,7 +275,7 @@ export default function WorkersPage() {
         </div>
       </div>
 
-      {setupModalOpen && (
+      {setupModalOpen && activeTab === 'IMESSAGE' && (
         <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-slate-900 w-full max-w-[450px] rounded-2xl shadow-xl flex flex-col relative overflow-hidden">
             <div className="flex justify-between items-center p-5 border-b border-slate-100 dark:border-slate-800">
@@ -183,7 +302,7 @@ export default function WorkersPage() {
               <p className="flex items-start gap-4">
                 <span className="w-5 h-5 shrink-0 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold">3</span>
                 <span>
-                  Assign the worker to a GHL location on{' '}
+                  Assign the connector to a GHL location on{' '}
                   <Link href="/subaccounts" className="text-indigo-500 underline">
                     Subaccounts
                   </Link>
@@ -203,10 +322,6 @@ export default function WorkersPage() {
                 </div>
                 <p className="text-[10px] text-slate-400 font-mono">Do not share this token.</p>
               </div>
-
-              <p className="text-center text-xs mt-6">
-                Need help? See <Link href="/settings" className="text-indigo-500 underline">Settings</Link> for webhook URLs and env vars.
-              </p>
             </div>
           </div>
         </div>

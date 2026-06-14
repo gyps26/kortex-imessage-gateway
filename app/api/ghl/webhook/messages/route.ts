@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase } from '../../../../../lib/db/mongoose';
-import { Message } from '../../../../../models/Message';
-import { outboundQueue } from '../../../../../lib/queue/redis';
+import { createOutboundMessage } from '../../../../../lib/routing/channelRouter';
+import type { Channel } from '../../../../../lib/connectors/types';
 
 function verifyWebhookAuth(req: NextRequest): boolean {
   const expectedSecret = process.env.GHL_WEBHOOK_SECRET;
@@ -14,56 +14,40 @@ function verifyWebhookAuth(req: NextRequest): boolean {
 
 export async function POST(req: NextRequest) {
   try {
-  if (!verifyWebhookAuth(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+    if (!verifyWebhookAuth(req)) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-  const body = await req.json();
+    const body = await req.json();
 
-  const phone = body.phone || body.to;
-  const msgBody = body.body || body.message;
-  const locationId = body.locationId || body.location_id || req.headers.get('x-ghl-location-id');
-  const contactId = body.contactId || body.contact_id;
-  const ghlMessageId = body.messageId || body.message_id;
+    const phone = body.phone || body.to;
+    const msgBody = body.body || body.message;
+    const locationId = body.locationId || body.location_id || req.headers.get('x-ghl-location-id');
+    const contactId = body.contactId || body.contact_id;
+    const ghlMessageId = body.messageId || body.message_id;
+    const channel = body.channel as Channel | undefined;
 
-  if (!phone || !msgBody) {
-    return NextResponse.json({ error: 'Missing phone or body' }, { status: 400 });
-  }
+    if (!phone || !msgBody) {
+      return NextResponse.json({ error: 'Missing phone or body' }, { status: 400 });
+    }
 
-  if (!locationId) {
-    return NextResponse.json({ error: 'Missing locationId — required to route message to a Mac worker' }, { status: 400 });
-  }
+    if (!locationId) {
+      return NextResponse.json({ error: 'Missing locationId — required to route message to a connector' }, { status: 400 });
+    }
 
-  await connectToDatabase();
+    await connectToDatabase();
 
-  const message = new Message({
-    ghlContactId: contactId,
-    ghlMessageId,
-    locationId,
-    phone,
-    body: msgBody,
-    attachments: body.attachments || [],
-    direction: 'outbound',
-    status: 'pending',
-  });
+    const message = await createOutboundMessage({
+      phone,
+      body: msgBody,
+      locationId,
+      contactId,
+      ghlMessageId,
+      attachments: body.attachments || [],
+      channel,
+    });
 
-  await message.save();
-
-  if (outboundQueue) {
-    await outboundQueue.add(
-      'send-sms',
-      { messageId: message._id },
-      {
-        removeOnComplete: true,
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
-      }
-    );
-  } else {
-    console.warn('Redis not configured. Message saved but not queued.');
-  }
-
-  return NextResponse.json({ success: true, messageId: message._id });
+    return NextResponse.json({ success: true, messageId: message._id, channel: message.channel });
   } catch (error: unknown) {
     const err = error as { message?: string };
     console.error('Error handling GHL webhook:', error);

@@ -1,10 +1,13 @@
 import mongoose from 'mongoose';
+import type { Channel } from '../lib/connectors/types';
 
 export interface IMessage extends mongoose.Document {
   ghlContactId?: string;
   ghlMessageId?: string;
   locationId?: string;
   workerId?: string;
+  deviceId?: string;
+  channel: Channel;
   phone: string;
   body: string;
   attachments?: string[];
@@ -19,7 +22,9 @@ const messageSchema = new mongoose.Schema<IMessage>({
   ghlContactId: { type: String },
   ghlMessageId: { type: String },
   locationId: { type: String, index: true },
-  workerId: { type: String }, // Which profile handled it
+  workerId: { type: String },
+  deviceId: { type: String },
+  channel: { type: String, enum: ['IMESSAGE', 'WHATSAPP', 'SMS'], default: 'IMESSAGE', required: true },
   phone: { type: String, required: true },
   body: { type: String, required: true },
   attachments: [{ type: String }],

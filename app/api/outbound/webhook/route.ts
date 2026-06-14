@@ -1,30 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { connectToDatabase } from '../../../../lib/db/mongoose';
-import { Message } from '../../../../models/Message';
-import { Profile } from '../../../../models/Profile';
+import { createOutboundMessage } from '../../../../lib/routing/channelRouter';
+import type { Channel } from '../../../../lib/connectors/types';
+
+function verifyWebhookSignature(rawBody: string, signature: string | null): boolean {
+  const secret = process.env.GHL_WEBHOOK_SECRET;
+  if (!secret) return true;
+  if (!signature) return false;
+
+  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  if (expected.length !== signature.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  } catch {
+    return false;
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
     const signature = req.headers.get('x-wh-signature');
 
-    // Optional: HMAC Verification if you provide a webhook secret in env
-    /*
-    if (process.env.GHL_WEBHOOK_SECRET) {
-      const expectedSignature = crypto
-        .createHmac('sha256', process.env.GHL_WEBHOOK_SECRET)
-        .update(rawBody)
-        .digest('hex');
-      if (signature !== expectedSignature) {
-        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
-      }
+    if (!verifyWebhookSignature(rawBody, signature)) {
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }
-    */
 
     const body = JSON.parse(rawBody);
-    
-    // GHL sends sms body differently depending on if it's a Workflow Webhook, Custom Action, or Custom SMS Provider
+
     const customData = body.customData || {};
     const contactId = body.contact_id || body.contactId || body.contact?.id;
     const phoneNum = body.phone || body.to || customData.phone || body.contact?.phone;
@@ -32,6 +36,7 @@ export async function POST(req: NextRequest) {
     const locId = body.location_id || body.locationId || body.location?.id;
     const ghlMsgId = body.messageId || body.message_id || `wf_${Date.now()}`;
     const attachments = body.attachments || [];
+    const channel = (body.channel || customData.channel) as Channel | undefined;
 
     if (!phoneNum || !msgBody || !locId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
@@ -39,55 +44,20 @@ export async function POST(req: NextRequest) {
 
     await connectToDatabase();
 
-    // 1. Create a Message log
-    const newMessage = await Message.create({
-      ghlContactId: contactId,
+    const message = await createOutboundMessage({
+      contactId,
       ghlMessageId: ghlMsgId,
       locationId: locId,
       phone: phoneNum,
       body: msgBody,
-      attachments: attachments,
-      direction: 'outbound',
-      status: 'pending'
+      attachments,
+      channel,
     });
 
-    // 2. Assign to active Mac Worker immediately
-    const activeProfiles = await Profile.find({ 
-        status: 'active',
-        assignedLocationId: locId
-    }).sort({ lastPing: -1 });
-
-    let selectedProfile = null;
-    for (const profile of activeProfiles) {
-        const now = new Date();
-        const lastReset = profile.lastReset || new Date(0);
-        if (now.getDate() !== lastReset.getDate() || now.getMonth() !== lastReset.getMonth() || now.getFullYear() !== lastReset.getFullYear()) {
-            profile.dailyCount = 0;
-            profile.lastReset = now;
-            await profile.save();
-        }
-
-        if (profile.dailyCount < (profile.dailyLimit || 50)) {
-            selectedProfile = profile;
-            break;
-        }
-    }
-
-    if (selectedProfile) {
-        newMessage.workerId = selectedProfile.workerId;
-        newMessage.status = 'queued';
-        await newMessage.save();
-        
-        selectedProfile.dailyCount += 1;
-        await selectedProfile.save();
-    } else {
-        console.warn(`No active Mac Workers available for location ${locId} to process message!`);
-    }
-
-    return NextResponse.json({ success: true, messageId: newMessage._id });
-
-  } catch (error: any) {
-    console.error('Outbound Webhook Error:', error.message);
+    return NextResponse.json({ success: true, messageId: message._id, channel: message.channel });
+  } catch (error: unknown) {
+    const err = error as { message?: string };
+    console.error('Outbound Webhook Error:', err.message);
     return NextResponse.json({ error: 'Failed to process webhook' }, { status: 500 });
   }
 }
